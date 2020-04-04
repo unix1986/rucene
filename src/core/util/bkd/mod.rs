@@ -25,19 +25,19 @@ pub use self::bkd_writer::*;
 
 mod heap_point;
 
-pub use self::heap_point::*;
+use self::heap_point::*;
 
 mod offline_point;
 
-pub use self::offline_point::*;
+use self::offline_point::*;
 
 use error::{ErrorKind::IllegalState, Result};
 
 use core::util::DocId;
 
-use core::codec::MutablePointsReader;
-use core::store::{DataOutput, Directory, IndexOutput, IndexOutputRef, InvalidIndexOutput};
-
+use core::codec::points::MutablePointsReader;
+use core::store::directory::Directory;
+use core::store::io::{DataOutput, IndexOutput, IndexOutputRef, InvalidIndexOutput};
 use core::util::bit_util::{pop_array, BitsRequired, UnsignedShift};
 use core::util::math;
 use core::util::selector::{DefaultIntroSelector, RadixSelector};
@@ -165,15 +165,15 @@ impl PointReader for PointReaderEnum {
 pub trait PointWriter {
     // add lifetime here, this is a reference type
     type IndexOutput: IndexOutput;
+    type PointReader: PointReader;
     fn append(&mut self, packed_value: &[u8], ord: i64, doc_id: DocId) -> Result<()>;
     fn destory(&mut self) -> Result<()>;
-    fn point_reader(&self, start_point: usize, length: usize) -> Result<PointReaderEnum>;
+    fn point_reader(&self, start_point: usize, length: usize) -> Result<Self::PointReader>;
     fn shared_point_reader(
         &mut self,
         start_point: usize,
         length: usize,
-        to_close_heroically: &mut Vec<PointReaderEnum>,
-    ) -> Result<&mut PointReaderEnum>;
+    ) -> Result<&mut Self::PointReader>;
     fn point_type(&self) -> PointType;
     fn index_output(&mut self) -> Self::IndexOutput;
     fn set_count(&mut self, count: i64);
@@ -185,13 +185,14 @@ pub trait PointWriter {
     fn clone(&self) -> Self;
 }
 
-pub enum PointWriterEnum<D: Directory> {
+enum PointWriterEnum<D: Directory> {
     Heap(HeapPointWriter),
     Offline(OfflinePointWriter<D>),
 }
 
 impl<D: Directory> PointWriter for PointWriterEnum<D> {
     type IndexOutput = PointWriterOutput<D>;
+    type PointReader = PointReaderEnum;
 
     fn append(&mut self, packed_value: &[u8], ord: i64, doc_id: DocId) -> Result<()> {
         match self {
@@ -205,7 +206,7 @@ impl<D: Directory> PointWriter for PointWriterEnum<D> {
             PointWriterEnum::Offline(o) => o.destory(),
         }
     }
-    fn point_reader(&self, start_point: usize, length: usize) -> Result<PointReaderEnum> {
+    fn point_reader(&self, start_point: usize, length: usize) -> Result<Self::PointReader> {
         match self {
             PointWriterEnum::Heap(h) => h.point_reader(start_point, length),
             PointWriterEnum::Offline(o) => o.point_reader(start_point, length),
@@ -215,15 +216,10 @@ impl<D: Directory> PointWriter for PointWriterEnum<D> {
         &mut self,
         start_point: usize,
         length: usize,
-        to_close_heroically: &mut Vec<PointReaderEnum>,
-    ) -> Result<&mut PointReaderEnum> {
+    ) -> Result<&mut Self::PointReader> {
         match self {
-            PointWriterEnum::Heap(h) => {
-                h.shared_point_reader(start_point, length, to_close_heroically)
-            }
-            PointWriterEnum::Offline(o) => {
-                o.shared_point_reader(start_point, length, to_close_heroically)
-            }
+            PointWriterEnum::Heap(h) => h.shared_point_reader(start_point, length),
+            PointWriterEnum::Offline(o) => o.shared_point_reader(start_point, length),
         }
     }
     fn point_type(&self) -> PointType {
@@ -309,9 +305,9 @@ impl<D: Directory> io::Write for PointWriterOutput<D> {
     }
 }
 
-/// BitSet of fixed length (numBits), backed by accessible ({@link #getBits})
-/// long[], accessed with a long index. Use it only if you intend to store more
-/// than 2.1B bits, otherwise you should use {@link FixedBitSet}.
+/// BitSet of fixed length (num_bits), backed by accessible ({@link #getBits})
+/// Vec<i64>, accessed with a long index. Use it only if you intend to store more
+/// than 2.1B bits, otherwise you should use `FixedBitSet`.
 ///
 /// @lucene.internal
 pub struct LongBitSet {
@@ -359,7 +355,7 @@ impl LongBitSet {
         let word_num = (index >> 6) as usize;
         let mask = 1i64 << (index & 0x3fi64);
         unsafe {
-            *self.bits.as_mut_ptr().offset(word_num as isize) |= mask;
+            *self.bits.as_mut_ptr().add(word_num) |= mask;
         }
     }
 
@@ -368,7 +364,7 @@ impl LongBitSet {
         let word_num = (index >> 6) as usize;
         let mask = 1i64 << (index & 0x3fi64);
         unsafe {
-            *self.bits.as_mut_ptr().offset(word_num as isize) &= !mask;
+            *self.bits.as_mut_ptr().add(word_num) &= !mask;
         }
     }
 }
@@ -399,6 +395,7 @@ impl<P: MutablePointsReader> UtilMSBIntroSorter<P> {
     }
 
     #[inline]
+    #[allow(clippy::mut_from_ref)]
     fn reader(&self) -> &mut P {
         unsafe { &mut *self.reader }
     }
@@ -555,6 +552,7 @@ impl MutablePointsReaderUtils {
         msb_sorter.sort(from, to);
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn sort_by_dim(
         sorted_dim: i32,
         bytes_per_dim: i32,
@@ -573,6 +571,7 @@ impl MutablePointsReaderUtils {
         intro_sorter.sort(from, to);
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn partition(
         max_doc: i32,
         split_dim: i32,

@@ -31,7 +31,7 @@ const NEXT_LEVEL_ARRAY: [usize; 10] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 9];
 const LEVEL_SIZE_ARRAY: [usize; 10] = [2, 4, 8, 16, 32, 64, 128, 256, 512, 1024];
 
 /// Class that Posting and PostingVector use to write byte
-/// streams into shared fixed-size byte[] arrays.  The idea
+/// streams into shared fixed-size bytes arrays.  The idea
 /// is to allocate slices of increasing lengths For
 /// example, the first slice is 5 bytes, the next slice is
 /// 14, etc.  We start by writing our bytes into the first
@@ -55,6 +55,8 @@ pub struct IntBlockPool {
     pub int_upto: usize,
     /// Current head offset
     pub int_offset: isize,
+    /// 2GB limit, auto flush
+    pub need_flush: bool,
     allocator: Box<dyn IntAllocator>,
 }
 
@@ -65,6 +67,7 @@ impl Default for IntBlockPool {
             buffer_upto: -1,
             int_upto: INT_BLOCK_SIZE,
             int_offset: -(INT_BLOCK_SIZE as isize),
+            need_flush: false,
             allocator: Box::new(DirectIntAllocator::default()),
         }
     }
@@ -81,6 +84,7 @@ impl IntBlockPool {
             buffer_upto: -1,
             int_upto: INT_BLOCK_SIZE,
             int_offset: -(INT_BLOCK_SIZE as isize),
+            need_flush: false,
             allocator,
         }
     }
@@ -107,7 +111,7 @@ impl IntBlockPool {
                     offset,
                     1 + self.buffer_upto as usize,
                 );
-                for i in offset..1 + self.buffer_upto as usize {
+                for i in offset..=self.buffer_upto as usize {
                     self.buffers[i] = Vec::with_capacity(0);
                 }
             }

@@ -11,9 +11,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use core::codec::codec_util;
-use core::index::{DocMap, IntersectVisitor, LiveDocsDocMap, Relation};
-use core::store::{ByteArrayDataInput, ByteArrayRef, DataInput, IndexInput};
+use core::codec::check_header;
+use core::codec::points::{IntersectVisitor, Relation};
+use core::index::merge::{DocMap, LiveDocsDocMap};
+use core::store::io::{ByteArrayDataInput, ByteArrayRef, DataInput, IndexInput};
 use core::util::bkd::DocIdsWriter;
 use core::util::bkd::{
     BKD_CODEC_NAME, BKD_VERSION_COMPRESSED_DOC_IDS, BKD_VERSION_COMPRESSED_VALUES,
@@ -61,11 +62,11 @@ impl<'a, IV: IntersectVisitor + 'a> IntersectState<'a, IV> {
     }
 }
 
-/// Handles intersection of an multi-dimensional shape in byte[] space with a block KD-tree
+/// Handles intersection of an multi-dimensional shape in bytes space with a block KD-tree
 /// previously written with `BKDWriter`.
 
 pub struct BKDReader {
-    /// Packed array of byte[] holding all split values in the full binary tree:
+    /// Packed array of bytes holding all split values in the full binary tree:
     pub leaf_node_offset: i32,
     pub num_dims: usize,
     pub bytes_per_dim: usize,
@@ -90,7 +91,7 @@ pub struct BKDReader {
 impl BKDReader {
     pub fn new(input: Arc<dyn IndexInput>) -> Result<BKDReader> {
         let mut reader: Box<dyn IndexInput> = input.as_ref().clone()?;
-        let version = codec_util::check_header(
+        let version = check_header(
             reader.as_mut(),
             BKD_CODEC_NAME,
             BKD_VERSION_START,
@@ -114,8 +115,8 @@ impl BKDReader {
 
         let mut min_packed_value = vec![0u8; packed_bytes_length];
         let mut max_packed_value = vec![0u8; packed_bytes_length];
-        reader.read_bytes(&mut min_packed_value, 0, packed_bytes_length)?;
-        reader.read_bytes(&mut max_packed_value, 0, packed_bytes_length)?;
+        reader.read_exact(&mut min_packed_value)?;
+        reader.read_exact(&mut max_packed_value)?;
 
         for dim in 0..num_dims {
             let start = dim * bytes_per_dim;
@@ -137,12 +138,12 @@ impl BKDReader {
         if version >= BKD_VERSION_PACKED_INDEX {
             let num_bytes = reader.read_vint()? as usize;
             packed_index.resize(num_bytes, 0u8);
-            reader.read_bytes(&mut packed_index, 0, num_bytes)?;
+            reader.read_exact(&mut packed_index)?;
         } else {
             // legacy un-packed index
             let length = bytes_per_index_entry * num_leaves;
             split_packed_values.resize(length, 0u8);
-            reader.read_bytes(&mut split_packed_values, 0, length)?;
+            reader.read_exact(&mut split_packed_values)?;
 
             // Read the file pointers to the start of each leaf block:
             leaf_block_fps.resize(num_leaves, 0i64);
@@ -167,8 +168,7 @@ impl BKDReader {
                             // match. We do this here, after loading at
                             // read-time, so that we can still
                             // delta code them on disk at write:
-                            let mut new_leaf_block_fps = Vec::with_capacity(num_leaves);
-                            new_leaf_block_fps.resize(num_leaves, 0i64);
+                            let mut new_leaf_block_fps = vec![0; num_leaves];
                             let length = leaf_block_fps.len() - last_level;
                             new_leaf_block_fps[0..length]
                                 .copy_from_slice(&leaf_block_fps[last_level..leaf_block_fps.len()]);
@@ -539,7 +539,7 @@ impl BKDReader {
         Ok(())
     }
 
-    #[allow(too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     fn visit_compressed_doc_values(
         &self,
         common_prefix_lengths: &mut [i32],
@@ -770,7 +770,7 @@ pub struct LegacyIndexTree {
 }
 
 impl LegacyIndexTree {
-    #[allow(too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         bytes_per_dim: usize,
         bytes_per_index_entry: i32,
@@ -891,18 +891,18 @@ impl IndexTree for LegacyIndexTree {
     }
 }
 
-/// Reads the new packed byte[] index format which can be up to ~63% smaller than the legacy index
+/// Reads the new packed bytes index format which can be up to ~63% smaller than the legacy index
 /// format on 20M NYC taxis tests.  This
 /// format takes advantage of the limited access pattern to the BKD tree at search time, i.e.
 /// starting at the root node and recursing  downwards one child at a time.
 pub struct PackedIndexTree {
-    // used to read the packed byte[]
+    // used to read the packed bytes
     input: ByteArrayDataInput<ByteArrayRef>,
     // holds the minimum (left most) leaf block file pointer for each level we've recursed to:
     leaf_block_fp_stack: Vec<i64>,
-    // holds the address, in the packed byte[] index, of the left-node of each level:
+    // holds the address, in the packed bytes index, of the left-node of each level:
     left_node_positions: Vec<i32>,
-    // holds the address, in the packed byte[] index, of the right-node of each level:
+    // holds the address, in the packed bytes index, of the right-node of each level:
     right_node_positions: Vec<i32>,
     // holds the splitDim for each level:
     split_dims: Vec<i32>,
@@ -1201,7 +1201,7 @@ impl<'a, IV: IntersectVisitor + 'a> MergeReader<'a, IV> {
                     &mut self.state.common_prefix_lengths,
                     &mut self.state.scratch_packed_value,
                     self.state.input.as_mut(),
-                    &mut self.state.scratch_doc_ids,
+                    &self.state.scratch_doc_ids,
                     self.docs_in_block,
                     &mut visitor,
                 )?;
@@ -1300,7 +1300,7 @@ impl<'a, IV: IntersectVisitor + 'a> IntersectVisitor for MergeIntersectVisitor<'
 }
 
 #[derive(Default, Clone)]
-pub(crate) struct StubIntersectVisitor {}
+pub struct StubIntersectVisitor {}
 
 impl IntersectVisitor for StubIntersectVisitor {
     fn visit(&mut self, _doc_id: i32) -> Result<()> {

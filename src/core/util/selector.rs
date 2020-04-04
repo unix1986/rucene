@@ -11,7 +11,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use core::codec::MutablePointsReader;
+use core::codec::points::MutablePointsReader;
 use core::util::bit_util::UnsignedShift;
 
 use std::cmp::Ordering;
@@ -169,10 +169,10 @@ impl<'a, 'b, P: MutablePointsReader> Selector for DefaultIntroSelector<'a, 'b, P
 
     fn byte_at(&self, i: i32, k: i32) -> i32 {
         if k < self.num_bytes_to_compare {
-            return self.reader.byte_at(i, k) as i32;
+            self.reader.byte_at(i, k) as i32
         } else {
             let shift = self.bits_per_doc_id - ((k - self.num_bytes_to_compare + 1) << 3);
-            return self.reader.doc_id(i).unsigned_shift(0.max(shift) as usize) & 0xff;
+            self.reader.doc_id(i).unsigned_shift(0.max(shift) as usize) & 0xff
         }
     }
 }

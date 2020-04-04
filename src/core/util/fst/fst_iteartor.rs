@@ -77,12 +77,12 @@ impl<F: OutputFactory> FSTIterBase<F> {
 
     fn grow(&mut self) {
         if self.arcs.len() <= self.upto {
-            for _ in self.arcs.len()..self.upto + 1 {
+            for _ in self.arcs.len()..=self.upto {
                 self.arcs.push(Arc::empty());
             }
         }
         if self.output.len() <= self.upto {
-            for _ in self.output.len()..self.upto + 1 {
+            for _ in self.output.len()..=self.upto {
                 let o = self.fst.outputs().empty();
                 self.output.push(o);
             }
@@ -220,7 +220,7 @@ impl<F: OutputFactory> FSTIterator<F> for BytesRefFSTIterator<F> {
     }
 
     fn get_current_label(&self) -> i32 {
-        self.current[self.base.upto] as i32 & 0xff
+        self.current[self.base.upto] as u32 as i32
     }
 
     fn set_current_label(&mut self, label: i32) {

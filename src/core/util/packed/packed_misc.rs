@@ -11,8 +11,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use core::codec::codec_util;
-use core::store::{DataInput, DataOutput, IndexInput};
+use core::codec::{check_header, write_header as codec_util_write_header};
+use core::store::io::{DataInput, DataOutput, IndexInput};
 use core::util::bit_util::{BitsRequired, UnsignedShift, ZigZagEncoding};
 use core::util::packed::packed_ints_null_reader::PackedIntsNullReader;
 
@@ -110,7 +110,7 @@ pub fn get_reader_no_header<T: DataInput + ?Sized>(
 }
 
 pub fn get_reader<T: DataInput + ?Sized>(input: &mut T) -> Result<ReaderEnum> {
-    let version = codec_util::check_header(input, CODEC_NAME, VERSION_START, VERSION_CURRENT)?;
+    let version = check_header(input, CODEC_NAME, VERSION_START, VERSION_CURRENT)?;
     let bits_per_value = input.read_vint()?;
     debug_assert!(
         bits_per_value > 0 && bits_per_value <= 64,
@@ -385,20 +385,20 @@ impl Format {
         }
     }
 
-    pub fn get_id(&self) -> i32 {
-        match *self {
+    pub fn get_id(self) -> i32 {
+        match self {
             Format::Packed => 0,
             Format::PackedSingleBlock => 1,
         }
     }
 
     pub fn byte_count(
-        &self,
+        self,
         _packed_ints_version: i32,
         value_count: i32,
         bits_per_value: i32,
     ) -> i64 {
-        match *self {
+        match self {
             Format::Packed => i64::from(value_count * bits_per_value + 7) / 8,
             _ => {
                 let values_per_block = 64 / bits_per_value;
@@ -409,12 +409,12 @@ impl Format {
     /// Computes how many long blocks are needed to store <code>values</code>
     /// values of size <code>bits_per_value</code>.
     pub fn long_count(
-        &self,
+        self,
         packed_ints_version: i32,
         value_count: i32,
         bits_per_value: i32,
     ) -> i32 {
-        match *self {
+        match self {
             Format::Packed => {
                 let byte_count = self.byte_count(packed_ints_version, value_count, bits_per_value);
                 ((byte_count + 7) / 8) as i32
@@ -428,16 +428,16 @@ impl Format {
 
     /// Tests whether the provided number of bits per value is supported by the
     /// format.
-    pub fn is_supported(&self, bits_per_value: i32) -> bool {
-        match *self {
+    pub fn is_supported(self, bits_per_value: i32) -> bool {
+        match self {
             Format::Packed => bits_per_value >= 1 && bits_per_value <= 64,
             _ => Packed64SingleBlock::is_supported(bits_per_value as usize),
         }
     }
 
     /// Returns the overhead per value, in bits.
-    pub fn overhead_per_value(&self, bits_per_value: i32) -> f32 {
-        match *self {
+    pub fn overhead_per_value(self, bits_per_value: i32) -> f32 {
+        match self {
             Format::Packed => 0f32,
             _ => {
                 let values_per_block = 64 / bits_per_value;
@@ -448,7 +448,7 @@ impl Format {
     }
 
     /// Returns the overhead ratio (<code>overhead per value / bits per value</code>).
-    pub fn overhead_ratio(&self, bits_per_value: i32) -> f32 {
+    pub fn overhead_ratio(self, bits_per_value: i32) -> f32 {
         self.overhead_per_value(bits_per_value) / bits_per_value as f32
     }
 }
@@ -507,7 +507,7 @@ impl FormatAndBits {
         {
             actual_bits_per_value = 48;
         } else {
-            for bpv in bits_per_value..max_bits_per_value + 1 {
+            for bpv in bits_per_value..=max_bits_per_value {
                 if Format::PackedSingleBlock.is_supported(bpv) {
                     let overhead = Format::PackedSingleBlock.overhead_per_value(bpv);
                     let acceptable_overhead =
@@ -1361,7 +1361,8 @@ pub struct Packed64 {
 }
 
 const PACKED64_BLOCK_SIZE: i32 = 64;
-const PACKED64_BLOCK_BITS: usize = 6; // The #bits representing BLOCK_SIZE
+const PACKED64_BLOCK_BITS: usize = 6;
+// The #bits representing BLOCK_SIZE
 const PACKED64_BLOCK_MOD_MASK: i64 = (PACKED64_BLOCK_SIZE - 1) as i64; // x % BLOCK_SIZE
 
 impl Packed64 {
@@ -1602,7 +1603,7 @@ impl Mutable for Packed64 {
         }
         debug_assert_eq!(from_index % n_aligned_values, 0);
 
-        // compute the long[] blocks for nAlignedValues consecutive values and
+        // compute the [i64] blocks for n_aligned_values consecutive values and
         // use them to set as many values as possible without applying any mask
         // or shift
         let aligned_blocks = (n_aligned_values * self.bits_per_value) >> 6;
@@ -2315,7 +2316,7 @@ impl PackedWriter {
             self.format
                 .byte_count(VERSION_CURRENT, self.off as i32, self.bits_per_value)
                 as usize;
-        out.write_bytes(&mut self.next_blocks, 0, block_count)?;
+        out.write_bytes(&self.next_blocks, 0, block_count)?;
         for i in 0..self.next_values.len() {
             self.next_values[i] = 0i64;
         }
@@ -2327,7 +2328,7 @@ impl PackedWriter {
 impl Writer for PackedWriter {
     fn write_header<T: DataOutput + ?Sized>(&self, out: &mut T) -> Result<()> {
         debug_assert_ne!(self.value_count, -1);
-        codec_util::write_header(out, CODEC_NAME, VERSION_CURRENT)?;
+        codec_util_write_header(out, CODEC_NAME, VERSION_CURRENT)?;
         out.write_vint(self.bits_per_value)?;
         out.write_vint(self.value_count)?;
         out.write_vint(self.get_format().get_id())?;
@@ -2629,7 +2630,7 @@ impl PackedIntDecoder for BulkOperationPacked {
     fn decode_long_to_int(&self, blocks: &[i64], values: &mut [i32], iterations: usize) {
         if self.bits_per_value > 32 {
             panic!(format!(
-                "Cannot decode {} -bits values into an int[]",
+                "Cannot decode {} -bits values into an i32 slice",
                 self.bits_per_value
             ));
         }
@@ -2746,7 +2747,7 @@ impl BulkOperationPackedSingleBlock {
         values[values_offset] = (block & self.mask) as i32;
         values_offset += 1;
         for _i in 1..self.value_count {
-            block = block.unsigned_shift(self.bits_per_value);;
+            block = block.unsigned_shift(self.bits_per_value);
             values[values_offset] = (block & self.mask) as i32;
             values_offset += 1;
         }
@@ -2807,7 +2808,7 @@ impl PackedIntDecoder for BulkOperationPackedSingleBlock {
     fn decode_byte_to_long(&self, blocks: &[u8], values: &mut [i64], iterations: usize) {
         let mut values_offset = 0;
         for i in 0..iterations {
-            let mut block = self.read_long(blocks, i * 8);
+            let block = self.read_long(blocks, i * 8);
             values_offset = self.decode_long_value_to_long(block, values, values_offset);
         }
     }
@@ -2815,7 +2816,7 @@ impl PackedIntDecoder for BulkOperationPackedSingleBlock {
     fn decode_long_to_int(&self, blocks: &[i64], values: &mut [i32], iterations: usize) {
         if self.bits_per_value > 32 {
             panic!(format!(
-                "Cannot decode {} -bits values into an int[]",
+                "Cannot decode {} -bits values into an i32 slice",
                 self.bits_per_value
             ));
         }
@@ -2828,7 +2829,7 @@ impl PackedIntDecoder for BulkOperationPackedSingleBlock {
     fn decode_byte_to_int(&self, blocks: &[u8], values: &mut [i32], iterations: usize) {
         if self.bits_per_value > 32 {
             panic!(format!(
-                "Cannot decode {} -bits values into an int[]",
+                "Cannot decode {} -bits values into an i32 slice",
                 self.bits_per_value
             ));
         }

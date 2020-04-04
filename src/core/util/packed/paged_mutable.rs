@@ -11,13 +11,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use core::index::{NumericDocValues, NumericDocValuesContext};
-use core::store::DataOutput;
+use core::codec::doc_values::NumericDocValues;
+use core::store::io::DataOutput;
 use core::util::packed::packed_misc::{
     check_block_size, copy_by_buf, get_mutable_by_format, num_blocks, Format, FormatAndBits,
     GrowableWriter, Mutable, MutableEnum, Reader,
 };
-use core::util::LongValues;
+use core::util::{DocId, LongValues};
 use std::cmp::min;
 
 use error::Result;
@@ -261,7 +261,7 @@ impl PagedMutableHugeWriter {
             size,
             page_size,
             fastest_bits.bits_per_value,
-            &fastest_bits.format,
+            fastest_bits.format,
             true,
         )
     }
@@ -270,18 +270,15 @@ impl PagedMutableHugeWriter {
         size: usize,
         page_size: usize,
         bits_per_value: i32,
-        format: &Format,
+        format: Format,
         fill_pages: bool,
     ) -> PagedMutableHugeWriter {
         let base = PagedMutableBase::new(bits_per_value, size, page_size);
-        let mut ret = PagedMutableHugeWriter {
-            base,
-            format: format.clone(),
-        };
+        let mut ret = PagedMutableHugeWriter { base, format };
         if fill_pages {
             ret.fill_pages();
         }
-        return ret;
+        ret
     }
 
     pub fn size(&self) -> usize {
@@ -312,35 +309,24 @@ impl PagedMutableWriter for PagedMutableHugeWriter {
             new_size,
             self.paged_mutable_base().page_size() as usize,
             self.paged_mutable_base().bits_per_value,
-            &self.format,
+            self.format,
             false,
         )
     }
 }
 
 impl LongValues for PagedMutableHugeWriter {
-    fn get64_with_ctx(
-        &self,
-        _ctx: Option<[u8; 64]>,
-        index: i64,
-    ) -> Result<(i64, Option<[u8; 64]>)> {
+    fn get64(&self, index: i64) -> Result<i64> {
         debug_assert!(index >= 0 && index < self.base.size as i64);
         let page_index = self.base.page_index(index as usize);
         let index_in_page = self.base.index_in_page(index as usize);
-        Ok((self.base.sub_mutables[page_index].get(index_in_page), None))
+        Ok(self.base.sub_mutables[page_index].get(index_in_page))
     }
 }
 
 impl NumericDocValues for PagedMutableHugeWriter {
-    fn get_with_ctx(
-        &self,
-        _ctx: NumericDocValuesContext,
-        doc_id: i32,
-    ) -> Result<(i64, NumericDocValuesContext)> {
-        debug_assert!(doc_id >= 0 && (doc_id as usize) < self.base.size);
-        let page_index = self.base.page_index(doc_id as usize);
-        let index_in_page = self.base.index_in_page(doc_id as usize);
-        Ok((self.base.sub_mutables[page_index].get(index_in_page), None))
+    fn get(&self, doc_id: DocId) -> Result<i64> {
+        self.get64(i64::from(doc_id))
     }
 }
 
@@ -385,7 +371,7 @@ impl PagedGrowableWriter {
         if fill_pages {
             ret.fill_pages();
         }
-        return ret;
+        ret
     }
 
     pub fn size(&self) -> usize {
@@ -422,27 +408,16 @@ impl PagedMutableWriter for PagedGrowableWriter {
 }
 
 impl LongValues for PagedGrowableWriter {
-    fn get64_with_ctx(
-        &self,
-        _ctx: Option<[u8; 64]>,
-        index: i64,
-    ) -> Result<(i64, Option<[u8; 64]>)> {
+    fn get64(&self, index: i64) -> Result<i64> {
         debug_assert!(index >= 0 && index < self.base.size as i64);
         let page_index = self.base.page_index(index as usize);
         let index_in_page = self.base.index_in_page(index as usize);
-        Ok((self.base.sub_mutables[page_index].get(index_in_page), None))
+        Ok(self.base.sub_mutables[page_index].get(index_in_page))
     }
 }
 
 impl NumericDocValues for PagedGrowableWriter {
-    fn get_with_ctx(
-        &self,
-        _ctx: NumericDocValuesContext,
-        doc_id: i32,
-    ) -> Result<(i64, NumericDocValuesContext)> {
-        debug_assert!(doc_id >= 0 && (doc_id as usize) < self.base.size);
-        let page_index = self.base.page_index(doc_id as usize);
-        let index_in_page = self.base.index_in_page(doc_id as usize);
-        Ok((self.base.sub_mutables[page_index].get(index_in_page), None))
+    fn get(&self, doc_id: DocId) -> Result<i64> {
+        self.get64(i64::from(doc_id))
     }
 }

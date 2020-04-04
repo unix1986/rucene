@@ -35,7 +35,9 @@ mod monotonic_block_packed_writer;
 
 pub use self::monotonic_block_packed_writer::*;
 
-pub mod packed_misc;
+mod packed_misc;
+
+pub use self::packed_misc::*;
 
 mod packed_ints_null_reader;
 

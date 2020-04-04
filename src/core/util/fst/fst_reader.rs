@@ -14,8 +14,8 @@
 use std::cmp::max;
 use std::io;
 
-use core::codec::codec_util;
-use core::store::{ByteArrayDataOutput, DataInput, DataOutput};
+use core::codec::{check_header, write_header};
+use core::store::io::{ByteArrayDataOutput, DataInput, DataOutput};
 use core::util::fst::bytes_store::{BytesStore, StoreBytesReader};
 use core::util::fst::fst_builder::{FstBuilder, Node};
 use core::util::fst::DirectionalBytesReader;
@@ -128,7 +128,7 @@ impl<T: Output> Arc<T> {
         self.label = other.label;
         self.output = other.output.clone();
         self.next_final_output = other.next_final_output.clone();
-        self.next_arc = other.next_arc.clone();
+        self.next_arc = other.next_arc;
         self.target = other.target;
         self.bytes_per_arc = other.bytes_per_arc;
         if self.bytes_per_arc > 0 {
@@ -176,7 +176,7 @@ pub struct FST<F: OutputFactory> {
     // the FST is very large (more than 1 GB).  If the FST is less than 1
     // GB then bytesArray is set instead.
     pub bytes_store: BytesStore,
-    // Used at read time when the FST fits into a single byte[].
+    // Used at read time when the FST fits into a single Vec<u8>.
     bytes_array: Vec<u8>,
     // flag of whether use bytes_store or bytes_array
     use_bytes_array: bool,
@@ -209,15 +209,12 @@ impl<F: OutputFactory> FST<F> {
 
         // Only reads most recent format; we don't have
         // back-compat promise for FSTs (they are experimental):
-        let version =
-            codec_util::check_header(data_in, FILE_FORMAT_NAME, VERSION_PACKED, VERSION_CURRENT)?;
+        let version = check_header(data_in, FILE_FORMAT_NAME, VERSION_PACKED, VERSION_CURRENT)?;
 
-        if version < VERSION_PACKED_REMOVED {
-            if data_in.read_byte()? == 1 {
-                bail!(ErrorKind::CorruptIndex(
-                    "Cannot read packed FSTs anymore".into()
-                ));
-            }
+        if version < VERSION_PACKED_REMOVED && data_in.read_byte()? == 1 {
+            bail!(ErrorKind::CorruptIndex(
+                "Cannot read packed FSTs anymore".into()
+            ));
         }
 
         let empty_output = if data_in.read_byte()? == 1 {
@@ -262,9 +259,9 @@ impl<F: OutputFactory> FST<F> {
             bytes_array = Vec::with_capacity(0);
             use_bytes_array = false;
         } else {
-            bytes_array = vec![0u8; num_bytes as usize];
-            let len = bytes_array.len();
-            data_in.read_bytes(&mut bytes_array, 0, len)?;
+            let len = num_bytes as usize;
+            bytes_array = vec![0u8; len];
+            data_in.read_exact(&mut bytes_array)?;
             // a dummy struct
             bytes_store = BytesStore::with_block_bits(8);
             use_bytes_array = true;
@@ -416,7 +413,7 @@ impl<F: OutputFactory> FST<F> {
         &self,
         label: Label,
         incoming_arc: &Arc<F::Value>,
-        bytes_reader: &mut BytesReader,
+        bytes_reader: &mut dyn BytesReader,
     ) -> Result<Option<Arc<F::Value>>> {
         self.find_target_arc_with_cache(label, &incoming_arc, bytes_reader, true)
     }
@@ -425,7 +422,7 @@ impl<F: OutputFactory> FST<F> {
         &self,
         label: Label,
         incoming_arc: &Arc<F::Value>,
-        bytes_reader: &mut BytesReader,
+        bytes_reader: &mut dyn BytesReader,
         use_root_arc_cache: bool,
     ) -> Result<Option<Arc<F::Value>>> {
         if label == END_LABEL {
@@ -448,7 +445,7 @@ impl<F: OutputFactory> FST<F> {
         }
 
         if use_root_arc_cache
-            && self.cached_root_arcs.len() > 0
+            && !self.cached_root_arcs.is_empty()
             && incoming_arc.target == self.start_node
             && label < self.cached_root_arcs.len() as i32
         {
@@ -525,7 +522,7 @@ impl<F: OutputFactory> FST<F> {
             if let Some(arc) = arc {
                 assert_eq!(res, arc);
             } else {
-                assert!(false);
+                panic!();
             }
         } else {
             debug_assert!(arc.is_none());
@@ -537,7 +534,7 @@ impl<F: OutputFactory> FST<F> {
         target > 0
     }
 
-    fn read_label(&self, reader: &mut BytesReader) -> Result<Label> {
+    fn read_label(&self, reader: &mut dyn BytesReader) -> Result<Label> {
         match self.input_type {
             InputType::Byte1 => reader.read_byte().map(Label::from),
             InputType::Byte2 => reader.read_short().map(Label::from),
@@ -548,7 +545,7 @@ impl<F: OutputFactory> FST<F> {
     pub fn read_first_real_arc(
         &self,
         node: CompiledAddress,
-        bytes_reader: &mut BytesReader,
+        bytes_reader: &mut dyn BytesReader,
     ) -> Result<Arc<F::Value>> {
         bytes_reader.set_position(node as usize);
 
@@ -572,7 +569,7 @@ impl<F: OutputFactory> FST<F> {
     pub fn read_first_target_arc(
         &self,
         follow: &Arc<F::Value>,
-        input: &mut BytesReader,
+        input: &mut dyn BytesReader,
     ) -> Result<Arc<F::Value>> {
         if follow.is_final() {
             let mut arc = Arc::empty();
@@ -594,7 +591,7 @@ impl<F: OutputFactory> FST<F> {
     pub fn read_next_arc(
         &self,
         arc: &mut Arc<F::Value>,
-        bytes_reader: &mut BytesReader,
+        bytes_reader: &mut dyn BytesReader,
     ) -> Result<()> {
         if arc.label == END_LABEL {
             // This was a fake inserted "final" arc
@@ -614,7 +611,7 @@ impl<F: OutputFactory> FST<F> {
     pub fn read_next_real_arc(
         &self,
         arc: &mut Arc<F::Value>,
-        bytes_reader: &mut BytesReader,
+        bytes_reader: &mut dyn BytesReader,
     ) -> Result<()> {
         if arc.bytes_per_arc > 0 {
             debug_assert!(arc.arc_index < arc.num_arcs);
@@ -660,7 +657,7 @@ impl<F: OutputFactory> FST<F> {
         Ok(())
     }
 
-    fn seek_to_next_node(&self, bytes_reader: &mut BytesReader) -> Result<()> {
+    fn seek_to_next_node(&self, bytes_reader: &mut dyn BytesReader) -> Result<()> {
         loop {
             let flags = bytes_reader.read_byte()?;
             self.read_label(bytes_reader)?;
@@ -681,7 +678,7 @@ impl<F: OutputFactory> FST<F> {
         }
     }
 
-    fn read_unpacked_node(&self, bytes_reader: &mut BytesReader) -> Result<CompiledAddress> {
+    fn read_unpacked_node(&self, bytes_reader: &mut dyn BytesReader) -> Result<CompiledAddress> {
         if self.version < VERSION_VINT_TARGET {
             bytes_reader.read_int().map(|x| x as CompiledAddress)
         } else {
@@ -710,12 +707,12 @@ impl<F: OutputFactory> FST<F> {
         let start_address = self.bytes_store.get_position();
 
         let do_fixed_array = self.should_expand(builder, node_index);
-        if do_fixed_array {
-            if builder.reused_bytes_per_arc.len() < builder.frontier[node_index].num_arcs {
-                builder
-                    .reused_bytes_per_arc
-                    .resize(builder.frontier[node_index].num_arcs, 0);
-            }
+        if do_fixed_array
+            && builder.reused_bytes_per_arc.len() < builder.frontier[node_index].num_arcs
+        {
+            builder
+                .reused_bytes_per_arc
+                .resize(builder.frontier[node_index].num_arcs, 0);
         }
         builder.arc_count += builder.frontier[node_index].num_arcs as u64;
 
@@ -952,7 +949,7 @@ impl<F: OutputFactory> FST<F> {
         if self.start_node == -1 {
             bail!(ErrorKind::IllegalState("call finish first!".into()));
         }
-        codec_util::write_header(out, FILE_FORMAT_NAME, VERSION_CURRENT)?;
+        write_header(out, FILE_FORMAT_NAME, VERSION_CURRENT)?;
         if VERSION_CURRENT < VERSION_PACKED_REMOVED {
             out.write_byte(0)?;
         }

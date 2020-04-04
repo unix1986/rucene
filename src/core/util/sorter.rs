@@ -430,15 +430,6 @@ impl MSBSorter for DefaultMSBIntroSorter {
 }
 
 impl Sorter for DefaultMSBIntroSorter {
-    fn swap(&mut self, i: i32, j: i32) {
-        self.msb_swap(i, j)
-    }
-
-    fn sort(&mut self, from: i32, to: i32) {
-        check_range(from, to);
-        self.quick_sort(from, to, 2 * ((((to - from) as f64).log2()) as i32));
-    }
-
     fn compare(&mut self, i: i32, j: i32) -> Ordering {
         for o in self.k..self.max_length {
             let b1 = self.byte_at(i, o);
@@ -451,6 +442,15 @@ impl Sorter for DefaultMSBIntroSorter {
         }
 
         Ordering::Equal
+    }
+
+    fn swap(&mut self, i: i32, j: i32) {
+        self.msb_swap(i, j)
+    }
+
+    fn sort(&mut self, from: i32, to: i32) {
+        check_range(from, to);
+        self.quick_sort(from, to, 2 * ((((to - from) as f64).log2()) as i32));
     }
 
     fn set_pivot(&mut self, i: i32) {
@@ -479,12 +479,10 @@ impl Sorter for DefaultMSBIntroSorter {
 
         if self.k + self.pivot_len as i32 == self.max_length {
             Ordering::Equal
+        } else if self.byte_at(j, self.k + self.pivot_len as i32).is_some() {
+            Ordering::Less
         } else {
-            if self.byte_at(j, self.k + self.pivot_len as i32).is_some() {
-                Ordering::Less
-            } else {
-                Ordering::Equal
-            }
+            Ordering::Equal
         }
     }
 }

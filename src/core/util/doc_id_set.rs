@@ -13,9 +13,6 @@
 
 use error::Result;
 
-use core::search::query_cache::{
-    NotDocIdSet, NotDocIterator, ShortArrayDocIdSet, ShortArrayDocIterator,
-};
 use core::search::{DocIdSet, DocIterator, NO_MORE_DOCS};
 use core::util::bit_set::{FixedBitSet, ImmutableBitSet};
 use core::util::DocId;
@@ -33,17 +30,17 @@ impl<T: ImmutableBitSet> BitDocIdSet<T> {
 
     pub fn with_bits(set: Arc<T>) -> BitDocIdSet<T> {
         let cost = set.approximate_cardinality();
-        BitDocIdSet {
-            cost,
-            set: Arc::from(set),
-        }
+        BitDocIdSet { cost, set }
     }
 }
 
 impl<T: ImmutableBitSet + 'static> DocIdSet for BitDocIdSet<T> {
-    type Iter = BitSetIterator<T>;
+    type Iter = BitSetDocIterator<T>;
     fn iterator(&self) -> Result<Option<Self::Iter>> {
-        Ok(Some(BitSetIterator::new(Arc::clone(&self.set), self.cost)?))
+        Ok(Some(BitSetDocIterator::new(
+            Arc::clone(&self.set),
+            self.cost,
+        )?))
     }
 
     //    fn bits(&self) -> Result<Option<ImmutableBitSetRef>> {
@@ -51,17 +48,17 @@ impl<T: ImmutableBitSet + 'static> DocIdSet for BitDocIdSet<T> {
     //    }
 }
 
-pub struct BitSetIterator<T: ImmutableBitSet> {
+pub struct BitSetDocIterator<T: ImmutableBitSet> {
     bits: Arc<T>,
     length: usize,
     cost: usize,
     doc: DocId,
 }
 
-impl<T: ImmutableBitSet> BitSetIterator<T> {
+impl<T: ImmutableBitSet> BitSetDocIterator<T> {
     pub fn new(bits: Arc<T>, cost: usize) -> Result<Self> {
         let length = bits.len();
-        Ok(BitSetIterator {
+        Ok(BitSetDocIterator {
             bits,
             length,
             cost,
@@ -74,7 +71,7 @@ impl<T: ImmutableBitSet> BitSetIterator<T> {
     }
 }
 
-impl<T: ImmutableBitSet> DocIterator for BitSetIterator<T> {
+impl<T: ImmutableBitSet> DocIterator for BitSetDocIterator<T> {
     fn doc_id(&self) -> DocId {
         self.doc
     }
@@ -188,19 +185,174 @@ impl DocIdSet for DocIdSetEnum {
     type Iter = DocIdSetDocIterEnum;
     fn iterator(&self) -> Result<Option<Self::Iter>> {
         match self {
-            DocIdSetEnum::ShortArray(s) => {
-                Ok(s.iterator()?.map(|i| DocIdSetDocIterEnum::ShortArray(i)))
-            }
-            DocIdSetEnum::IntArray(s) => {
-                Ok(s.iterator()?.map(|i| DocIdSetDocIterEnum::IntArray(i)))
-            }
-            DocIdSetEnum::NotDocId(s) => {
-                Ok(s.iterator()?.map(|i| DocIdSetDocIterEnum::NotDocId(i)))
-            }
-            DocIdSetEnum::BitDocId(s) => {
-                Ok(s.iterator()?.map(|i| DocIdSetDocIterEnum::BitDocId(i)))
-            }
+            DocIdSetEnum::ShortArray(s) => Ok(s.iterator()?.map(DocIdSetDocIterEnum::ShortArray)),
+            DocIdSetEnum::IntArray(s) => Ok(s.iterator()?.map(DocIdSetDocIterEnum::IntArray)),
+            DocIdSetEnum::NotDocId(s) => Ok(s.iterator()?.map(DocIdSetDocIterEnum::NotDocId)),
+            DocIdSetEnum::BitDocId(s) => Ok(s.iterator()?.map(DocIdSetDocIterEnum::BitDocId)),
         }
+    }
+}
+
+pub struct ShortArrayDocIdSet {
+    docs: Arc<Vec<u16>>,
+    length: usize,
+}
+
+impl ShortArrayDocIdSet {
+    pub fn new(docs: Vec<u16>, length: usize) -> ShortArrayDocIdSet {
+        ShortArrayDocIdSet {
+            docs: Arc::new(docs),
+            length,
+        }
+    }
+}
+
+impl DocIdSet for ShortArrayDocIdSet {
+    type Iter = ShortArrayDocIterator;
+    fn iterator(&self) -> Result<Option<Self::Iter>> {
+        Ok(Some(ShortArrayDocIterator::new(
+            self.docs.clone(),
+            self.length,
+        )))
+    }
+}
+
+pub struct ShortArrayDocIterator {
+    docs: Arc<Vec<u16>>,
+    length: usize,
+    i: i32,
+    doc: DocId,
+}
+
+impl ShortArrayDocIterator {
+    pub fn new(docs: Arc<Vec<u16>>, length: usize) -> ShortArrayDocIterator {
+        ShortArrayDocIterator {
+            docs,
+            length,
+            i: -1,
+            doc: -1,
+        }
+    }
+}
+
+impl DocIterator for ShortArrayDocIterator {
+    fn doc_id(&self) -> DocId {
+        self.doc
+    }
+
+    fn next(&mut self) -> Result<DocId> {
+        self.i += 1;
+        if self.i as usize >= self.length {
+            Ok(NO_MORE_DOCS)
+        } else {
+            self.doc = i32::from(unsafe { *self.docs.as_ptr().offset(self.i as isize) });
+            Ok(self.doc)
+        }
+    }
+
+    fn advance(&mut self, target: DocId) -> Result<DocId> {
+        self.doc = if (self.i + 1) as usize >= self.length {
+            NO_MORE_DOCS
+        } else {
+            let adv = match self.docs[(self.i + 1) as usize..self.length]
+                .binary_search(&(target as u16))
+            {
+                Ok(x) => x,
+                Err(e) => e,
+            };
+            self.i += (adv + 1) as i32;
+            if self.i < self.length as i32 {
+                i32::from(unsafe { *self.docs.as_ptr().offset(self.i as isize) })
+            } else {
+                NO_MORE_DOCS
+            }
+        };
+
+        Ok(self.doc)
+    }
+
+    fn cost(&self) -> usize {
+        self.length
+    }
+}
+
+pub struct NotDocIdSet<T: DocIdSet> {
+    set: T,
+    max_doc: i32,
+}
+
+impl<T: DocIdSet> NotDocIdSet<T> {
+    pub fn new(set: T, max_doc: i32) -> NotDocIdSet<T> {
+        NotDocIdSet { set, max_doc }
+    }
+}
+
+impl<T: DocIdSet> DocIdSet for NotDocIdSet<T> {
+    type Iter = NotDocIterator<T::Iter>;
+    fn iterator(&self) -> Result<Option<Self::Iter>> {
+        match self.set.iterator()? {
+            Some(iter) => Ok(Some(NotDocIterator::new(iter, self.max_doc))),
+            _ => Ok(None),
+        }
+    }
+    //    fn bits(&self) -> Result<Option<ImmutableBitSetRef>> {
+    //        self.set.bits()
+    //    }
+}
+
+pub struct NotDocIterator<DI: DocIterator> {
+    max_doc: i32,
+    doc: DocId,
+    next_skipped_doc: i32,
+    iterator: DI,
+}
+
+impl<DI: DocIterator> NotDocIterator<DI> {
+    pub fn new(iterator: DI, max_doc: i32) -> Self {
+        NotDocIterator {
+            max_doc,
+            doc: -1,
+            next_skipped_doc: -1,
+            iterator,
+        }
+    }
+}
+
+impl<DI: DocIterator> DocIterator for NotDocIterator<DI> {
+    fn doc_id(&self) -> DocId {
+        self.doc
+    }
+
+    fn next(&mut self) -> Result<DocId> {
+        let adv = self.doc + 1;
+        self.advance(adv)
+    }
+
+    fn advance(&mut self, target: DocId) -> Result<DocId> {
+        self.doc = target;
+
+        if self.doc > self.next_skipped_doc {
+            self.next_skipped_doc = self.iterator.advance(self.doc)?;
+        }
+
+        loop {
+            if self.doc >= self.max_doc {
+                self.doc = NO_MORE_DOCS;
+                return Ok(self.doc);
+            }
+
+            debug_assert!(self.doc <= self.next_skipped_doc);
+            if self.doc != self.next_skipped_doc {
+                return Ok(self.doc);
+            }
+
+            self.doc += 1;
+            self.next_skipped_doc = self.iterator.next()?;
+        }
+    }
+
+    fn cost(&self) -> usize {
+        self.max_doc as usize
     }
 }
 
@@ -208,7 +360,7 @@ pub enum DocIdSetDocIterEnum {
     ShortArray(ShortArrayDocIterator),
     IntArray(IntArrayDocIterator),
     NotDocId(NotDocIterator<ShortArrayDocIterator>),
-    BitDocId(BitSetIterator<FixedBitSet>),
+    BitDocId(BitSetDocIterator<FixedBitSet>),
 }
 
 // used for empty stub

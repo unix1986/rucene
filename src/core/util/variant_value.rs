@@ -18,7 +18,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::hash::{Hash, Hasher};
 
-use core::util::Numeric;
+use core::util::numeric::Numeric;
 
 #[derive(Debug, Clone, Deserialize)]
 pub enum VariantValue {
@@ -130,7 +130,7 @@ impl fmt::Display for VariantValue {
             VariantValue::Char(c) => write!(f, "{}", c),
             VariantValue::Short(s) => write!(f, "{}s", s),
             VariantValue::Int(ival) => write!(f, "{}", ival),
-            VariantValue::Long(lval) => write!(f, "{}L", lval),
+            VariantValue::Long(lval) => write!(f, "{}", lval),
             VariantValue::Float(fval) => write!(f, "{:.3}", fval),
             VariantValue::Double(d) => write!(f, "{:.6}", d),
             VariantValue::VString(ref s) => write!(f, "{}", s),
@@ -384,11 +384,11 @@ mod tests {
     fn variant_long_test() {
         let ival = VariantValue::Long(28_754_383);
         let expr = format!("{}", ival);
-        assert_eq!(expr, "28754383L");
+        assert_eq!(expr, "28754383");
     }
 
     #[test]
-    #[allow(approx_constant)]
+    #[allow(clippy::approx_constant)]
     fn variant_float_test() {
         let fval = VariantValue::Float(3.141_593);
         let expr = format!("{}f", fval);
@@ -416,7 +416,7 @@ mod tests {
     }
 
     #[test]
-    #[allow(approx_constant)]
+    #[allow(clippy::approx_constant)]
     fn variant_double_test() {
         let dval = VariantValue::Double(3.141_592_653_5);
         let expr = format!("{}", dval);

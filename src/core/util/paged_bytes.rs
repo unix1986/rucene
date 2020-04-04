@@ -11,7 +11,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use core::store::{DataInput, DataOutput, IndexInput};
+use core::store::io::{DataInput, DataOutput, IndexInput};
 use core::util::BytesRef;
 
 use error::{
@@ -230,7 +230,7 @@ impl DataInput for PagedBytesDataInput {
 
 impl Read for PagedBytesDataInput {
     fn read(&mut self, buf: &mut [u8]) -> ::std::io::Result<usize> {
-        if buf.len() < 1 {
+        if buf.is_empty() {
             return Ok(0);
         }
 
@@ -310,7 +310,7 @@ impl DataOutput for PagedBytesDataOutput {
 
 impl Write for PagedBytesDataOutput {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        if buf.len() < 1 {
+        if buf.is_empty() {
             return Ok(0);
         }
 
@@ -356,8 +356,7 @@ impl PagedBytesReader {
             let length = block[offset] as usize;
             block[offset + 1..offset + 1 + length].to_vec()
         } else {
-            let length =
-                ((block[offset] as usize & 0x7f) << 8) | (block[offset + 1] as usize & 0xff);
+            let length = ((block[offset] as usize & 0x7f) << 8) | (block[offset + 1] as usize);
             let end = offset + 2 + length;
             block[offset + 2..end].to_vec()
         }

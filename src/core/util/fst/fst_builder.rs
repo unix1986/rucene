@@ -22,8 +22,8 @@ use core::util::fst::bytes_store::StoreBytesReader;
 use core::util::fst::fst_reader::{CompiledAddress, InputType};
 use core::util::fst::{BytesReader, Output, OutputFactory, FST};
 use core::util::ints_ref::{IntsRef, IntsRefBuilder};
+use core::util::packed::COMPACT;
 use core::util::packed::{PagedGrowableWriter, PagedMutableWriter};
-use core::util::packed_misc::COMPACT;
 use core::util::LongValues;
 
 use error::Result;
@@ -66,7 +66,7 @@ pub struct FstBuilder<F: OutputFactory> {
     // Used for the BIT_TARGET_NEXT optimization (whereby
     // instead of storing the address of the target node for
     // a given arc, we mark a single bit noting that the next
-    // node in the byte[] is the target node):
+    // node in the bytes is the target node):
     pub last_frozen_node: i64,
     // Reused temporarily while building the FST:
     pub reused_bytes_per_arc: Vec<usize>,
@@ -93,6 +93,7 @@ impl<F: OutputFactory> FstBuilder<F> {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn build(
         input_type: InputType,
         min_suffix_count1: u32,
@@ -190,12 +191,12 @@ impl<F: OutputFactory> FstBuilder<F> {
         if self.last_input.length < down_to {
             return Ok(());
         }
-        for i in 0..self.last_input.length - down_to + 1 {
+        for i in 0..=self.last_input.length - down_to {
             let idx = self.last_input.length - i;
             let mut do_prune = false;
             let mut do_compile = false;
 
-            let mut tmp = UnCompiledNode::new(self, 0);
+            let tmp = UnCompiledNode::new(self, 0);
             let mut parent = mem::replace(&mut self.frontier[idx - 1], tmp);
 
             if self.frontier[idx].input_count < self.min_suffix_count1 as i64 {
@@ -346,7 +347,7 @@ impl<F: OutputFactory> FstBuilder<F> {
         self.freeze_tail(prefix_len_plus1)?;
 
         // init tail states for current input
-        for i in prefix_len_plus1..input.length + 1 {
+        for i in prefix_len_plus1..=input.length {
             let node = Node::UnCompiled(i);
             self.frontier[i - 1].add_arc(input.ints()[input.offset + i - 1], node);
             self.frontier[i].input_count += 1;
@@ -412,17 +413,14 @@ impl<F: OutputFactory> FstBuilder<F> {
             || self.frontier[0].input_count < self.min_suffix_count2 as i64
             || self.frontier[0].num_arcs == 0
         {
-            if self.fst.empty_output.is_none() {
-                return Ok(None);
-            } else if self.min_suffix_count1 > 0 || self.min_suffix_count2 > 0 {
-                // empty string got pruned
+            if self.fst.empty_output.is_none()
+                || (self.min_suffix_count1 > 0 || self.min_suffix_count2 > 0)
+            {
                 return Ok(None);
             }
-        } else {
-            if self.min_suffix_count2 != 0 {
-                let tail_len = self.last_input.length;
-                self.compile_all_targets(0, tail_len)?;
-            }
+        } else if self.min_suffix_count2 != 0 {
+            let tail_len = self.last_input.length;
+            self.compile_all_targets(0, tail_len)?;
         }
 
         let node = {
@@ -466,7 +464,7 @@ impl<F: OutputFactory> fmt::Debug for BuilderArc<F> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let target = match self.target {
             Node::Compiled(c) => format!("Compiled({})", c),
-            Node::UnCompiled(_) => format!("UnCompiled"),
+            Node::UnCompiled(_) => "UnCompiled".to_string(),
         };
         write!(
             f,
@@ -514,6 +512,7 @@ impl<F: OutputFactory> NodeHash<F> {
         }
     }
 
+    #[allow(clippy::mut_from_ref)]
     fn fst(&self) -> &mut FST<F> {
         unsafe { &mut (*self.fst) }
     }
@@ -521,10 +520,8 @@ impl<F: OutputFactory> NodeHash<F> {
     fn nodes_equal(&mut self, node: &UnCompiledNode<F>, address: CompiledAddress) -> Result<bool> {
         let reader = &mut self.input as *mut StoreBytesReader;
         let mut scratch_arc = unsafe { self.fst().read_first_real_arc(address, &mut *reader)? };
-        if scratch_arc.bytes_per_arc > 0 {
-            if node.num_arcs != scratch_arc.num_arcs {
-                return Ok(false);
-            }
+        if scratch_arc.bytes_per_arc > 0 && node.num_arcs != scratch_arc.num_arcs {
+            return Ok(false);
         }
 
         for idx in 0..node.num_arcs {
@@ -537,20 +534,16 @@ impl<F: OutputFactory> NodeHash<F> {
                 if output != &arc.output {
                     return Ok(false);
                 }
-            } else {
-                if !arc.output.is_empty() {
-                    return Ok(false);
-                }
+            } else if !arc.output.is_empty() {
+                return Ok(false);
             }
 
             if let Some(ref output) = scratch_arc.next_final_output {
                 if output != &arc.next_final_output {
                     return Ok(false);
                 }
-            } else {
-                if !arc.next_final_output.is_empty() {
-                    return Ok(false);
-                }
+            } else if !arc.next_final_output.is_empty() {
+                return Ok(false);
             }
 
             if let Node::Compiled(ref node) = arc.target {
@@ -605,7 +598,7 @@ impl<F: OutputFactory> NodeHash<F> {
         h
     }
 
-    fn node_hash_compiled(&self, n: CompiledAddress, input: &mut BytesReader) -> Result<u64> {
+    fn node_hash_compiled(&self, n: CompiledAddress, input: &mut dyn BytesReader) -> Result<u64> {
         let prime = 31u64;
         let mut h = 0u64;
         let mut arc = self.fst().read_first_real_arc(n, input)?;
@@ -614,7 +607,7 @@ impl<F: OutputFactory> NodeHash<F> {
             if arc.target != 0 {
                 h = prime
                     .wrapping_mul(h)
-                    .wrapping_add((arc.target ^ (arc.target >> 32)) as u64);;
+                    .wrapping_add((arc.target ^ (arc.target >> 32)) as u64);
             }
             if let Some(ref output) = arc.output {
                 h = prime.wrapping_mul(h).wrapping_add(self.hash_code(output));
@@ -666,7 +659,7 @@ impl<F: OutputFactory> NodeHash<F> {
         }
     }
 
-    fn rehash(&mut self, input: &mut BytesReader) -> Result<()> {
+    fn rehash(&mut self, input: &mut dyn BytesReader) -> Result<()> {
         let old_size = self.table.size();
         let new_table = PagedGrowableWriter::new(
             2 * old_size,
@@ -687,7 +680,7 @@ impl<F: OutputFactory> NodeHash<F> {
     }
 
     // called only by rehash
-    fn add_new(&mut self, address: i64, input: &mut BytesReader) -> Result<()> {
+    fn add_new(&mut self, address: i64, input: &mut dyn BytesReader) -> Result<()> {
         let hash = self.node_hash_compiled(address, input)? as usize;
         let mut pos = hash & self.mask;
         let mut c = 0;

@@ -32,9 +32,9 @@ pub fn bytes_subtract(bytes_per_dim: usize, dim: usize, a: &[u8], b: &[u8], resu
     let start = dim * bytes_per_dim;
     let end = start + bytes_per_dim;
     let mut borrow = 0;
-    let i = end - 1;
+    let mut i = end - 1;
     while i >= start {
-        let mut diff: i32 = (a[i] as i32 & 0xFF) - (b[i] as i32 & 0xFF) - borrow;
+        let mut diff: i32 = (a[i] as u32 as i32) - (b[i] as u32 as i32) - borrow;
         if diff < 0 {
             diff += 256;
             borrow = 1;
@@ -43,6 +43,7 @@ pub fn bytes_subtract(bytes_per_dim: usize, dim: usize, a: &[u8], b: &[u8], resu
         }
 
         result[i - start] = diff as u8;
+        i -= 1;
     }
 
     if borrow != 0 {
@@ -60,7 +61,7 @@ pub fn bytes_difference(left: &[u8], right: &[u8]) -> i32 {
         }
     }
 
-    return len as i32;
+    len as i32
 }
 
 /// Returns the length of {@code currentTerm} needed for use as a sort key.

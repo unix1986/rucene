@@ -11,7 +11,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use core::store::DataOutput;
+use core::store::io::DataOutput;
 use core::util::bit_util::{BitsRequired, UnsignedShift, ZigZagEncoding};
 use core::util::packed::packed_misc::{
     check_block_size, get_encoder, max_value, Format, PackedIntEncoder, PackedIntMeta, BPV_SHIFT,
@@ -41,7 +41,7 @@ impl BaseBlockPackedWriter {
         }
     }
 
-    // same as DataOutput.writeVLong but accepts negative values
+    // same as DataOutput.write_vlong but accepts negative values
     pub fn write_vlong(out: &mut impl DataOutput, mut i: i64) -> Result<()> {
         let mut k = 0;
         while (i & (!0x7Fi64)) != 0i64 && k < 8 {
@@ -91,7 +91,7 @@ impl BaseBlockPackedWriter {
         encoder.encode_long_to_byte(&self.values, &mut self.blocks, iterations);
         let block_count =
             Format::Packed.byte_count(VERSION_CURRENT, self.off as i32, bits_required);
-        out.write_bytes(&mut self.blocks, 0, block_count as usize)
+        out.write_bytes(&self.blocks, 0, block_count as usize)
     }
 }
 
@@ -161,7 +161,7 @@ impl AbstractBlockPackedWriter for BlockPackedWriter {
             // no need to delta-encode
             min = 0;
         } else if min > 0 {
-            // make min as small as possible so that writeVLong requires fewer bytes
+            // make min as small as possible so that write_vlong requires fewer bytes
             min = 0i64.max(max - max_value(bits_required));
         }
 

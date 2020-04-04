@@ -11,26 +11,25 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use core::analysis::char_buffer::CharacterBuffer;
-use core::analysis::TokenStream;
-use core::attribute::PositionIncrementAttribute;
-use core::attribute::TermToBytesRefAttribute;
-use core::attribute::{CharTermAttribute, OffsetAttribute};
+use core::analysis::{
+    CharTermAttribute, OffsetAttribute, PositionAttribute, TermToBytesRefAttribute,
+};
+use core::analysis::{CharacterBuffer, TokenStream};
 
 use error::Result;
 
 use std::fmt;
 use std::io::Read;
 
-const MAX_WORD_LEN: usize = 255;
-#[allow(dead_code)]
+// NOTE: this length is length by byte, so it's different from Lucene's word length
+const MAX_WORD_LEN: usize = 511;
+
 const IO_BUFFER_SIZE: usize = 4096;
 
-/// A tokenizer that divides text at whitespace characters as defined by
-/// {@link Character#isWhitespace(int)}.  Note: That definition explicitly excludes the
-/// non-breaking space. Adjacent sequences of non-Whitespace characters form tokens.
+/// A tokenizer that divides text at whitespace characters.
 ///
-/// @see UnicodeWhitespaceTokenizer
+/// Note: That definition explicitly excludes the non-breaking space.
+/// Adjacent sequences of non-Whitespace characters form tokens.
 pub struct WhitespaceTokenizer {
     offset: usize,
     buffer_index: usize,
@@ -38,6 +37,7 @@ pub struct WhitespaceTokenizer {
     final_offset: usize,
     term_attr: CharTermAttribute,
     offset_attr: OffsetAttribute,
+    position_attr: PositionAttribute,
     io_buffer: CharacterBuffer,
     reader: Box<dyn Read>,
 }
@@ -57,7 +57,7 @@ impl fmt::Debug for WhitespaceTokenizer {
 }
 
 impl WhitespaceTokenizer {
-    pub fn new(reader: Box<Read>) -> Self {
+    pub fn new(reader: Box<dyn Read>) -> Self {
         WhitespaceTokenizer {
             offset: 0,
             buffer_index: 0,
@@ -65,7 +65,8 @@ impl WhitespaceTokenizer {
             final_offset: 0,
             term_attr: CharTermAttribute::new(),
             offset_attr: OffsetAttribute::new(),
-            io_buffer: CharacterBuffer::new(vec![], 0, 0),
+            position_attr: PositionAttribute::new(),
+            io_buffer: CharacterBuffer::new(IO_BUFFER_SIZE),
             reader,
         }
     }
@@ -116,16 +117,17 @@ impl TokenStream for WhitespaceTokenizer {
             }
 
             let cur_char = self.io_buffer.char_at(self.buffer_index);
+            self.buffer_index += 1;
             if self.is_token_char(cur_char) {
                 if length == 0 {
                     debug_assert_eq!(start, -1);
-                    start = (self.offset + self.buffer_index) as isize;
+                    start = (self.offset + self.buffer_index - 1) as isize;
                     end = start;
                 }
                 end += 1;
                 length += cur_char.len_utf8();
                 self.term_attr.push_char(cur_char);
-                if self.term_attr.char_cnt >= MAX_WORD_LEN {
+                if self.term_attr.len() >= MAX_WORD_LEN {
                     break;
                 }
             } else if length > 0 {
@@ -164,15 +166,53 @@ impl TokenStream for WhitespaceTokenizer {
         &self.offset_attr
     }
 
-    fn position_attribute_mut(&mut self) -> &mut PositionIncrementAttribute {
-        unimplemented!()
+    fn position_attribute_mut(&mut self) -> &mut PositionAttribute {
+        &mut self.position_attr
     }
 
-    fn term_bytes_attribute_mut(&mut self) -> &mut TermToBytesRefAttribute {
+    fn term_bytes_attribute_mut(&mut self) -> &mut dyn TermToBytesRefAttribute {
         &mut self.term_attr
     }
 
-    fn term_bytes_attribute(&self) -> &TermToBytesRefAttribute {
+    fn term_bytes_attribute(&self) -> &dyn TermToBytesRefAttribute {
         &self.term_attr
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::BufReader;
+
+    #[test]
+    fn test_whitespace_tokenizer() {
+        let source = "The quick brown fox jumps over a lazy dog";
+        let offsets = [
+            (0usize, 3usize),
+            (4, 9),
+            (10, 15),
+            (16, 19),
+            (20, 25),
+            (26, 30),
+            (31, 32),
+            (33, 37),
+            (38, 41),
+        ];
+        let words: Vec<&str> = source.split(" ").collect();
+        let reader = Box::new(BufReader::new(source.as_bytes()));
+
+        let mut tokenizer = WhitespaceTokenizer::new(reader);
+
+        for i in 0..9 {
+            let res = tokenizer.increment_token(); // Ok(true)
+            assert!(res.is_ok());
+            assert!(res.unwrap());
+            assert_eq!(tokenizer.offset_attribute().start_offset(), offsets[i].0);
+            assert_eq!(tokenizer.offset_attribute().end_offset(), offsets[i].1);
+            assert_eq!(
+                tokenizer.term_bytes_attribute().get_bytes_ref().bytes(),
+                words[i].as_bytes()
+            );
+        }
     }
 }

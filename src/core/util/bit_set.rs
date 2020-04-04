@@ -15,7 +15,7 @@ use std::sync::Arc;
 
 use core::search::{DocIterator, NO_MORE_DOCS};
 use core::util::bit_util::{self, UnsignedShift};
-use core::util::{Bits, BitsContext, BitsRef};
+use core::util::{Bits, BitsRef};
 
 use error::{ErrorKind, Result};
 
@@ -32,7 +32,7 @@ pub trait ImmutableBitSet: Bits {
     /// `DocIdSetIterator#NO_MORE_DOCS` is returned if there are no more set bits.
     fn next_set_bit(&self, index: usize) -> i32;
 
-    fn assert_unpositioned(&self, iter: &DocIterator) -> Result<()> {
+    fn assert_unpositioned(&self, iter: &dyn DocIterator) -> Result<()> {
         if iter.doc_id() != -1 {
             bail!(ErrorKind::IllegalState(format!(
                 "This operation only works with an unpositioned iterator, got current position = \
@@ -41,6 +41,37 @@ pub trait ImmutableBitSet: Bits {
             )))
         }
         Ok(())
+    }
+}
+
+pub struct BitSetIterator<'a, S> {
+    bit_set: &'a S,
+    current: i32,
+}
+
+impl<'a, S: ImmutableBitSet> BitSetIterator<'a, S> {
+    pub fn new(bit_set: &'a S) -> Self {
+        Self {
+            bit_set,
+            current: -1,
+        }
+    }
+}
+
+impl<'a, S: ImmutableBitSet + 'a> Iterator for BitSetIterator<'a, S> {
+    type Item = i32;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.current + 1 >= self.bit_set.len() as i32 {
+            None
+        } else {
+            self.current = self.bit_set.next_set_bit((self.current + 1) as usize);
+            if self.current == NO_MORE_DOCS {
+                None
+            } else {
+                Some(self.current)
+            }
+        }
     }
 }
 
@@ -61,7 +92,7 @@ pub trait BitSet: ImmutableBitSet {
 
     /// Does in-place OR of the bits provided by the iterator. The state of the
     /// iterator after this operation terminates is undefined.
-    fn or(&mut self, iter: &mut DocIterator) -> Result<()> {
+    fn or(&mut self, iter: &mut dyn DocIterator) -> Result<()> {
         self.assert_unpositioned(iter)?;
         loop {
             let doc = iter.next()?;
@@ -79,7 +110,7 @@ pub trait BitSet: ImmutableBitSet {
 }
 
 /// BitSet of fixed length (numBits), backed by accessible `#getBits`
-/// long[], accessed with an int index, implementing {@link Bits} and
+/// Vec<i64>, accessed with an int index, implementing `Bits` and
 /// `DocIdSet`. If you need to manage more than 2.1B bits, use
 /// `LongBitSet`.
 pub struct FixedBitSet {
@@ -115,7 +146,7 @@ impl FixedBitSet {
         }
     }
 
-    /// Creates a new LongBitSet using the provided long[] array as backing store.
+    /// Creates a new LongBitSet using the provided Vec<i64> array as backing store.
     /// The storedBits array must be large enough to accommodate the numBits specified, but may be
     /// larger. In that case the 'extra' or 'ghost' bits must be clear (or they may provoke
     /// spurious side-effects) @param storedBits the array to use as backing store
@@ -142,7 +173,7 @@ impl FixedBitSet {
     /// returns the given bits, otherwise returns a new {@link FixedBitSet} which
     /// can hold the requested number of bits.
     ///
-    /// NOTE: the returned bitset reuses the underlying {@code long[]} of
+    /// NOTE: the returned bit set reuses the underlying Vec<i64> of
     /// the given `bits` if possible. Also, calling {@link #length()} on the
     /// returned bits may return a value greater than {@code numBits}.
     pub fn ensure_capacity(&mut self, num_bits: usize) {
@@ -196,7 +227,7 @@ impl FixedBitSet {
         unsafe {
             let ptr = self.bits.as_mut_ptr();
             for i in start_word + 1..end_word {
-                let e = ptr.offset(i as isize);
+                let e = ptr.add(i);
                 *e = !*e;
             }
         }
@@ -238,7 +269,7 @@ impl ImmutableBitSet for FixedBitSet {
         debug_assert!(index < self.num_bits);
         let mut i = index >> 6;
         // skip all the bits to the right of index
-        let word = unsafe { *self.bits.as_ptr().offset(i as isize) } >> (index & 0x3fusize);
+        let word = unsafe { *self.bits.as_ptr().add(i) } >> (index & 0x3fusize);
 
         if word != 0 {
             return (index as u32 + word.trailing_zeros()) as i32;
@@ -251,7 +282,7 @@ impl ImmutableBitSet for FixedBitSet {
                 if i >= self.num_words {
                     break;
                 }
-                let word = *bits_ptr.offset(i as isize);
+                let word = *bits_ptr.add(i);
                 if word != 0 {
                     return ((i << 6) as u32 + word.trailing_zeros()) as i32;
                 }
@@ -268,7 +299,7 @@ impl BitSet for FixedBitSet {
         let word_num = index >> 6;
         let mask = 1i64 << (index & 0x3fusize);
         unsafe {
-            *self.bits.as_mut_ptr().offset(word_num as isize) |= mask;
+            *self.bits.as_mut_ptr().add(word_num) |= mask;
         }
     }
 
@@ -335,31 +366,28 @@ impl BitSet for FixedBitSet {
 
 impl Bits for FixedBitSet {
     #[inline]
-    fn get_with_ctx(&self, ctx: BitsContext, index: usize) -> Result<(bool, BitsContext)> {
+    fn get(&self, index: usize) -> Result<bool> {
         debug_assert!(index < self.num_bits);
         let i = index >> 6; // div 64
                             // signed shift will keep a negative index and force an
                             // array-index-out-of-bounds-exception, removing the need for an explicit check.
         let mask = 1i64 << (index & 0x3fusize);
-        Ok((
-            unsafe { *self.bits.as_ptr().offset(i as isize) & mask != 0 },
-            ctx,
-        ))
+        Ok(unsafe { *self.bits.as_ptr().add(i) & mask != 0 })
     }
 
     fn len(&self) -> usize {
         self.num_bits
     }
 
-    fn as_bit_set(&self) -> &BitSet {
+    fn as_bit_set(&self) -> &dyn BitSet {
         self
     }
 
-    fn as_bit_set_mut(&mut self) -> &mut BitSet {
+    fn as_bit_set_mut(&mut self) -> &mut dyn BitSet {
         self
     }
 
-    fn clone(&self) -> BitsRef {
+    fn clone_box(&self) -> BitsRef {
         Arc::new(Self::copy_from(self.bits.clone(), self.num_bits).unwrap())
     }
 }

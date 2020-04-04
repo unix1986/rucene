@@ -11,13 +11,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use core::index::{NumericDocValues, NumericDocValuesContext};
+use core::codec::doc_values::NumericDocValues;
 use core::util::bit_util::BitsRequired;
 use core::util::packed::MonotonicBlockPackedReader;
-use core::util::packed_misc::{
+use core::util::packed::{
     check_block_size, get_mutable_by_ratio, Mutable, MutableEnum, PackedIntsNullMutable, Reader,
 };
-use core::util::{DocId, LongValues, LongValuesContext, ReusableIterator};
+use core::util::{DocId, LongValues, ReusableIterator};
 
 use error::Result;
 use std::mem;
@@ -35,6 +35,7 @@ pub enum PackedLongValuesBuilderType {
     Monotonic,
 }
 
+/// Utility class to compress integers into a `LongValues` instance.
 pub struct PackedLongValues {
     page_shift: usize,
     page_mask: usize,
@@ -106,17 +107,14 @@ impl PackedLongValues {
             _ => {}
         }
 
-        match self.builder_type {
-            PackedLongValuesBuilderType::Monotonic => {
-                let average = self.averages[block];
-                k = 0;
-                while k < size {
-                    dest[k] = dest[k]
-                        .wrapping_add(MonotonicBlockPackedReader::expected(0, average, k as i32));
-                    k += 1;
-                }
+        if let PackedLongValuesBuilderType::Monotonic = self.builder_type {
+            let average = self.averages[block];
+            k = 0;
+            while k < size {
+                dest[k] = dest[k]
+                    .wrapping_add(MonotonicBlockPackedReader::expected(0, average, k as i32));
+                k += 1;
             }
-            _ => {}
         }
 
         size as i32
@@ -145,26 +143,18 @@ impl PackedLongValues {
 }
 
 impl LongValues for PackedLongValues {
-    fn get64_with_ctx(
-        &self,
-        ctx: LongValuesContext,
-        index: i64,
-    ) -> Result<(i64, LongValuesContext)> {
+    fn get64(&self, index: i64) -> Result<i64> {
         debug_assert!(index >= 0 && index < self.size());
         let block = (index >> self.page_shift as i64) as usize;
         let element = (index & self.page_mask as i64) as usize;
 
-        Ok((self.get_by_block(block, element), ctx))
+        Ok(self.get_by_block(block, element))
     }
 }
 
 impl NumericDocValues for PackedLongValues {
-    fn get_with_ctx(
-        &self,
-        ctx: NumericDocValuesContext,
-        doc_id: DocId,
-    ) -> Result<(i64, NumericDocValuesContext)> {
-        Ok((self.get64(doc_id as i64)?, ctx))
+    fn get(&self, doc_id: DocId) -> Result<i64> {
+        self.get64(i64::from(doc_id))
     }
 }
 
@@ -252,6 +242,7 @@ pub struct PackedLongValuesBuilder {
     mins: Vec<i64>,
     averages: Vec<f32>,
     builder_type: PackedLongValuesBuilderType,
+    built: bool,
 }
 
 impl PackedLongValuesBuilder {
@@ -272,10 +263,13 @@ impl PackedLongValuesBuilder {
             mins: vec![],
             averages: vec![],
             builder_type,
+            built: false,
         }
     }
 
     pub fn build(&mut self) -> PackedLongValues {
+        assert!(!self.built);
+        self.built = true;
         self.finish();
         self.pending = vec![];
 
@@ -329,15 +323,12 @@ impl PackedLongValuesBuilder {
                 / (self.pending_off - 1) as f32
         };
 
-        match self.builder_type {
-            PackedLongValuesBuilderType::Monotonic => {
-                for i in 0..self.pending_off {
-                    self.pending[i] = self.pending[i].wrapping_sub(
-                        MonotonicBlockPackedReader::expected(0, average_ori, i as i32),
-                    );
-                }
+        if let PackedLongValuesBuilderType::Monotonic = self.builder_type {
+            for i in 0..self.pending_off {
+                self.pending[i] = self.pending[i].wrapping_sub(
+                    MonotonicBlockPackedReader::expected(0, average_ori, i as i32),
+                );
             }
-            _ => {}
         }
 
         let mut min_value_ori = self.pending[0];
@@ -398,11 +389,8 @@ impl PackedLongValuesBuilder {
             _ => {}
         }
 
-        match self.builder_type {
-            PackedLongValuesBuilderType::Monotonic => {
-                self.averages.push(average_ori);
-            }
-            _ => {}
+        if let PackedLongValuesBuilderType::Monotonic = self.builder_type {
+            self.averages.push(average_ori);
         }
 
         self.values_off += 1;

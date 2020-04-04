@@ -13,8 +13,8 @@
 
 use error::{ErrorKind::UnsupportedOperation, Result};
 
-use core::index::IntersectVisitor;
-use core::store::{DataOutput, IndexInput};
+use core::codec::points::IntersectVisitor;
+use core::store::io::{DataOutput, IndexInput};
 use core::util::bit_util::UnsignedShift;
 use core::util::DocId;
 
@@ -206,7 +206,7 @@ impl DocIdsWriter {
                 max |= doc_ids[start + i] as u32 as u64;
             }
 
-            if max <= 0xFFFFFF {
+            if max <= 0x00FF_FFFF {
                 out.write_byte(24 as u8)?;
                 for i in 0..count {
                     out.write_short((doc_ids[start + i].unsigned_shift(8)) as i16)?;
